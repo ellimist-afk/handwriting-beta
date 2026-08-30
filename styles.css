@@ -1,0 +1,967 @@
+/* Handwriting: pen ink on ordinary Markdown notes in Obsidian */
+
+.handwriting-content.view-content {
+	padding: 0;
+	overflow: hidden;
+}
+
+.handwriting-root {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	touch-action: none;
+	user-select: none;
+	-webkit-user-select: none;
+	outline: none;
+	background: var(--background-primary);
+	cursor: crosshair;
+}
+
+.handwriting-paper,
+.handwriting-committed,
+.handwriting-wet,
+.handwriting-tail,
+.handwriting-highlight {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.handwriting-paper {
+	background-color: transparent;
+}
+
+/*
+ * Highlighter ink is drawn opaque and made translucent here, once, for the
+ * whole layer. Painting translucent ink instead would double-blend every
+ * overlap into a dark seam.
+ */
+.handwriting-highlight {
+	opacity: 0.35;
+}
+
+/* ---- images ---- */
+
+/*
+ * Same single-transform trick as the text layer: one composited change per
+ * camera move, and pictures scale with the world for free.
+ */
+.handwriting-images {
+	position: absolute;
+	inset: 0;
+	transform-origin: 0 0;
+	pointer-events: none;
+	will-change: transform;
+}
+
+.handwriting-image {
+	position: absolute;
+	pointer-events: none;
+	overflow: hidden;
+	border-radius: 2px;
+}
+
+.handwriting-image img {
+	width: 100%;
+	height: 100%;
+	object-fit: fill;
+	-webkit-user-drag: none;
+	user-select: none;
+}
+
+/* The attachment could not be resolved. Show the hole, do not hide it. */
+.handwriting-image.is-missing {
+	border: 1px dashed var(--text-error);
+	opacity: 0.6;
+}
+
+/* ---- text containers ---- */
+
+/*
+ * One transform for the whole layer: panning a page with fifty boxes is a
+ * single composited change, not fifty layout writes. Boxes are positioned in
+ * world units inside it.
+ */
+.handwriting-objects {
+	position: absolute;
+	inset: 0;
+	transform-origin: 0 0;
+	pointer-events: none;
+	will-change: transform;
+}
+
+.handwriting-box {
+	position: absolute;
+	pointer-events: none;
+	padding: 2px 4px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	color: var(--text-normal);
+	font-size: 16px;
+	line-height: 1.5;
+}
+
+.handwriting-box.is-editing {
+	border-color: var(--background-modifier-border);
+	background: var(--background-primary);
+}
+
+.handwriting-box-content > :first-child {
+	margin-top: 0;
+}
+
+.handwriting-box-content > :last-child {
+	margin-bottom: 0;
+}
+
+.handwriting-box-content.is-empty {
+	min-height: 1.5em;
+}
+
+.handwriting-box-editor {
+	display: block;
+	width: 100%;
+	min-height: 1.5em;
+	padding: 0;
+	margin: 0;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	line-height: inherit;
+	resize: none;
+	overflow: hidden;
+	pointer-events: auto;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+/* Small, quiet grab point. The box body stays pointer-transparent so ink
+   can cross typed text. */
+.handwriting-box-handle {
+	position: absolute;
+	left: -16px;
+	top: -2px;
+	width: 12px;
+	height: 12px;
+	border-radius: 3px;
+	background: var(--text-faint);
+	opacity: 0.25;
+	pointer-events: auto;
+	cursor: move;
+	touch-action: none;
+}
+
+.handwriting-box-handle:hover {
+	opacity: 0.8;
+}
+
+/* ---- interaction affordances ---- */
+
+.handwriting-caret {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 2px;
+	height: 22px;
+	transform-origin: 0 0;
+	background: var(--text-accent);
+	pointer-events: none;
+	animation: handwriting-blink 1s steps(2, start) infinite;
+}
+
+@keyframes handwriting-blink {
+	to {
+		visibility: hidden;
+	}
+}
+
+.handwriting-pen-cursor,
+.handwriting-eraser-cursor {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: none;
+	border-radius: 50%;
+	pointer-events: none;
+}
+
+.handwriting-pen-cursor {
+	box-sizing: border-box;
+	/* Page-coloured ring separates the dot from whatever is under it, then a
+	   dark ring outside that so the whole thing reads on any background. The
+	   outer ring is the only part that adds to the footprint (the border is
+	   inside the border box), so it is kept at 1px: at 1.5 it was carrying a
+	   third of the reticle's apparent size. */
+	border: 1.5px solid var(--background-primary);
+	box-shadow: 0 0 0 1px var(--text-normal);
+}
+
+/*
+ * The same reticle in eraser mode: an outline at the erase radius rather than
+ * a filled dot at the nib width, so the ring shows exactly what a tip contact
+ * would take away. Dashed to read as "removes" at a glance, and it keeps the
+ * pen cursor's double border so it stays visible on any theme background.
+ */
+/* Lasso mode at the nib: a dashed ring, distinct from nib dot and eraser
+   outline, so the mode is visible before the tip commits. */
+.handwriting-pen-cursor.handwriting-pen-hover-lasso {
+	border: 1.5px dashed var(--text-accent);
+	background-color: transparent;
+	box-shadow: 0 0 0 1px var(--background-primary);
+	opacity: 0.9;
+}
+
+/* Insert-space mode at the nib: the divider in miniature, so the tip shows
+   the seam it will plant instead of a nib dot that would say "pen". */
+.handwriting-pen-cursor.handwriting-pen-hover-space {
+	border: 0;
+	border-top: 1.5px dashed var(--text-accent);
+	border-radius: 0;
+	background-color: transparent;
+	opacity: 0.9;
+}
+
+/* Strip grouping: modes (pick one) | selection actions | history. A hairline
+   rather than a gap, so the row does not grow on a phone where it already
+   wraps. Height comes from the button box, not a fixed number. */
+.handwriting-mobile-tools-divider {
+	align-self: stretch;
+	width: 1px;
+	margin: 4px 3px;
+	background-color: var(--background-modifier-border);
+	flex: 0 0 auto;
+}
+
+/* Pan mode at the nib: the one SOLID ring, so "grab the page" never reads
+   as one of the dashed marking tools. */
+.handwriting-pen-cursor.handwriting-pen-hover-pan {
+	border: 1.5px solid var(--text-accent);
+	background-color: transparent;
+	box-shadow: 0 0 0 1px var(--background-primary);
+	opacity: 0.9;
+}
+
+.handwriting-pen-cursor.handwriting-pen-hover-eraser {
+	border: 1.5px dashed var(--text-normal);
+	background-color: transparent;
+	box-shadow: 0 0 0 1px var(--background-primary);
+	opacity: 0.9;
+}
+
+.cm-scroller.handwriting-pen-hover,
+.cm-scroller.handwriting-pen-hover * {
+	cursor: none;
+}
+
+.handwriting-eraser-cursor {
+	box-sizing: border-box;
+	border: 1.5px solid var(--text-normal);
+	/* Second ring in the page colour, so the outline stays readable over ink,
+	   over text and over bare background without picking a side. */
+	box-shadow: 0 0 0 1px var(--background-primary);
+	opacity: 0.9;
+}
+
+/* ---- embed ink ---- */
+
+/* Read-only ink over rendered markdown (embeds, reading view). Never takes
+   a pointer: the rendered page is the editor's problem, this is a picture. */
+/* The one support line, at the foot of the settings tab. Muted and small:
+   it is a fact someone can act on, not a banner. */
+.handwriting-support {
+	margin-top: 2em;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+/* The pen reticle over a PDF, positioned in the scroller's content
+   coordinates - the same ones the ink uses. Not fixed: a transformed ancestor
+   turns fixed into absolute against itself, and the reticle drifts off the
+   nib. */
+.handwriting-pdf-cursor {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: none;
+	border-radius: 50%;
+	pointer-events: none;
+	z-index: 100;
+	box-sizing: border-box;
+	border: 1.5px solid var(--background-primary);
+	box-shadow: 0 0 0 1px var(--text-normal);
+}
+
+/* Dimmed while the PDF is still being identified. Ink is refused until the
+   content hash lands, and without this the reticle looks ready when it is
+   not - which is indistinguishable from the plugin being broken. */
+.handwriting-pdf-cursor-waiting {
+	opacity: 0.3;
+}
+
+/* While a pen is near, the system cursor is redundant with the reticle and
+   two markers near each other read as one of them being wrong. */
+.pdf-viewer-container.handwriting-pdf-hover,
+.pdf-viewer-container.handwriting-pdf-hover * {
+	cursor: none;
+}
+
+/* Eraser and lasso show their reach rather than a nib: a dot that lies about
+   what the eraser is about to take is worse than no dot at all. */
+.handwriting-pdf-cursor-ring {
+	border: 1px dashed var(--text-normal);
+	box-shadow: none;
+}
+
+/* ---- pdf ink ---- */
+
+/*
+ * One overlay per live PDF page, inside the page div so it inherits the
+ * viewer's own placement and scrolling. Never interactive: input is claimed
+ * from the pen router, not by this element sitting in the way of selection.
+ */
+.handwriting-pdf-ink {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+	max-width: none;
+	z-index: 2;
+}
+
+.handwriting-embed-ink {
+	position: absolute;
+	left: 0;
+	top: 0;
+	pointer-events: none;
+	max-width: none;
+}
+
+/* ---- paper ---- */
+
+/*
+ * Ruled backgrounds, chosen per device (body class), drawn on the editor
+ * scroller. background-attachment: local scrolls the ruling with the text -
+ * paper, and never a window decal. 28px pitch, the border color at 1px so it
+ * stays quiet under ink in both themes.
+ */
+body.handwriting-paper-lines .markdown-source-view .cm-scroller {
+	background-image: repeating-linear-gradient(
+		to bottom,
+		transparent,
+		transparent 27px,
+		var(--background-modifier-border) 27px,
+		var(--background-modifier-border) 28px
+	);
+	background-attachment: local;
+}
+
+body.handwriting-paper-grid .markdown-source-view .cm-scroller {
+	background-image:
+		repeating-linear-gradient(
+			to bottom,
+			transparent,
+			transparent 27px,
+			var(--background-modifier-border) 27px,
+			var(--background-modifier-border) 28px
+		),
+		repeating-linear-gradient(
+			to right,
+			transparent,
+			transparent 27px,
+			var(--background-modifier-border) 27px,
+			var(--background-modifier-border) 28px
+		);
+	background-attachment: local, local;
+}
+
+/* Toolbar corner (settings): the strip and its collapsed pill are the same
+   control in two sizes, so one class positions both. Top-right is the default
+   and the historical position - the writing palm owns the bottom of the glass,
+   which is why a bottom corner is a choice rather than the default. */
+.handwriting-mobile-tools.handwriting-corner-top-right,
+.handwriting-pen-pill.handwriting-corner-top-right {
+	top: 8px;
+	right: 8px;
+}
+
+.handwriting-mobile-tools.handwriting-corner-top-left,
+.handwriting-pen-pill.handwriting-corner-top-left {
+	top: 8px;
+	left: 8px;
+}
+
+.handwriting-mobile-tools.handwriting-corner-bottom-right,
+.handwriting-pen-pill.handwriting-corner-bottom-right {
+	bottom: 8px;
+	right: 8px;
+}
+
+.handwriting-mobile-tools.handwriting-corner-bottom-left,
+.handwriting-pen-pill.handwriting-corner-bottom-left {
+	bottom: 8px;
+	left: 8px;
+}
+
+/* ---- mobile tool strip ---- */
+
+/*
+ * Only mounted on Platform.isMobileApp (the palette is unreachable there
+ * while the stylus fix holds the keyboard down). Top-right: the writing palm
+ * owns the bottom of the glass. 40px targets per the touch guidelines;
+ * touch-action: manipulation kills the double-tap zoom delay on the buttons.
+ */
+.handwriting-mobile-tools {
+	position: absolute;
+	z-index: 12;
+	/* Own compositor layer, isolated paints: the strip floats OVER the
+	   low-latency wet canvas, and without isolation its repaints and the
+	   canvas's invalidate each other - measured as stroke lag whenever the
+	   toolbar was unfolded (orion, 1.0.4 era). */
+	will-change: transform;
+	/* NO paint containment here: the drop-downs (sliders, swatches) hang
+	   BELOW the strip's box, and contain:paint clips children to the box -
+	   it silently swallowed every pop. layout+style keep the isolation. */
+	contain: layout style;
+	/* Reappear 160ms after the last pen-up; vanish near-instantly at
+	   pen-down. The delay keeps an eraser scrub from strobing the strip. */
+	transition: opacity 60ms linear 160ms, visibility 0s linear 160ms;
+	display: flex;
+	/* Phones: the row is wider than the screen wants; wrap instead of clip. */
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	max-width: calc(100% - 16px);
+	gap: 2px;
+	padding: 4px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	opacity: 0.92;
+}
+
+/* Desktop trims the chrome; mobile keeps 40px touch targets. */
+.handwriting-mobile-tool {
+	width: 32px;
+	height: 32px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	background: transparent;
+	border: none;
+	border-radius: 8px;
+	box-shadow: none;
+	color: var(--text-muted);
+	touch-action: manipulation;
+}
+
+/*
+ * setIcon svgs carry no width/height attributes: their whole rendered size
+ * is `svg.svg-icon { width: var(--icon-size) }` (obsidian app.css). If
+ * that variable fails to resolve here, the icon renders at zero size -
+ * present in the dom, invisible, which one ipad on 1.13.7 exhibited on
+ * release day. Explicit minimums make that failure impossible. The font
+ * rules cover the glyph-initial fallback path.
+ */
+.handwriting-mobile-tool {
+	font-size: 15px;
+	font-weight: 600;
+}
+
+.handwriting-mobile-tool .svg-icon,
+.handwriting-pen-pill .svg-icon {
+	width: var(--icon-size, 18px);
+	height: var(--icon-size, 18px);
+	min-width: 18px;
+	min-height: 18px;
+	opacity: 1;
+}
+
+.handwriting-mobile-tool.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+/* Nothing to undo (or redo): the button says so instead of lying. */
+.handwriting-mobile-tool.is-disabled {
+	opacity: 0.35;
+}
+
+/* Slider pops: a vertical drop-down under its tool button (up = bigger,
+   vertical-lr + rtl; the -webkit-appearance fallback covers webkit builds
+   that predate vertical writing-mode on range inputs), with a live value
+   readout underneath - on glass without hover there is no other feedback.
+   Positioned per-show in refresh(), wrap-safe. */
+.handwriting-slider-pop {
+	display: none;
+	position: absolute;
+	will-change: transform;
+	/* layout+style only: the rotated slider paints outside its layout box
+	   by design, and paint containment clips it (and the value readout). */
+	contain: layout style;
+	top: 100%;
+	margin-top: 4px;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	padding: 8px 4px 6px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	opacity: 0.92;
+}
+
+.handwriting-slider-pop.is-showing {
+	display: flex;
+}
+
+/*
+ * Vertical by ROTATION, deliberately. Native vertical range inputs are a
+ * compatibility minefield: chromium removed -webkit-appearance:
+ * slider-vertical (129), writing-mode on range landed late everywhere, and
+ * older webkit has neither - both a chromium 150 and an old ipados build
+ * rendered the "vertical" slider horizontal on release day. A transform
+ * renders identically on every engine ever shipped, and pointer hit-testing
+ * follows the transform natively. Right end points UP, so up = bigger.
+ */
+.handwriting-slider-slot {
+	position: relative;
+	width: 28px;
+	height: 104px;
+}
+
+.handwriting-slider-pop .handwriting-eraser-slider {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	/* Two classes on purpose: app.css styles `input[type='range']`
+	   (0,1,1), which beats a single class - its width: 100px and 4px
+	   track height silently won here, and the rotated slider spilled
+	   12px past both ends of the old margin-derived slot (the thumb
+	   crossed the pop's border at max). The slot div is the layout
+	   truth; the input just centers inside it. */
+	width: 96px;
+	margin: 0;
+	transform: translate(-50%, -50%) rotate(-90deg);
+	touch-action: manipulation;
+}
+
+/* Stroke | Reticle chips at the top of the eraser's pop. */
+.handwriting-mode-chips {
+	display: flex;
+	gap: 4px;
+	padding: 2px 2px 0;
+}
+
+.handwriting-mode-chip {
+	font-size: 10px;
+	line-height: 1.4;
+	padding: 2px 8px;
+	border-radius: 8px;
+	border: 1px solid var(--background-modifier-border);
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.handwriting-mode-chip.is-current {
+	color: var(--text-on-accent);
+	background: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+}
+
+/* Color swatches: a row of the active tool's palette; current one ringed. */
+.handwriting-color-pop {
+	flex-direction: row;
+	/* Eight swatches, so the row has to be allowed to fold on a narrow strip. */
+	flex-wrap: wrap;
+	max-width: 148px;
+	gap: 6px;
+	padding: 8px;
+}
+
+.handwriting-color-swatch {
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 50%;
+	box-shadow: none;
+	cursor: pointer;
+}
+
+.handwriting-color-swatch.is-current {
+	box-shadow: 0 0 0 2px var(--background-secondary), 0 0 0 3.5px var(--interactive-accent);
+}
+
+.handwriting-slider-val {
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	color: var(--text-muted);
+}
+
+/* Collapsed: the strip yields to a single pill (PencilKit's move). Both
+   elements always exist; classes swap which one shows. */
+.handwriting-mobile-tools.is-collapsed {
+	display: none;
+}
+
+.handwriting-mobile-tools.is-inking,
+.handwriting-pen-pill.is-inking {
+	opacity: 0;
+	visibility: hidden;
+	transition: opacity 40ms linear, visibility 0s linear 40ms;
+}
+
+.handwriting-pen-pill {
+	position: absolute;
+	z-index: 12;
+	will-change: transform;
+	contain: layout style paint;
+	transition: opacity 60ms linear 160ms, visibility 0s linear 160ms;
+	display: none;
+	width: 34px;
+	height: 34px;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 50%;
+	background: var(--background-secondary);
+	box-shadow: none;
+	color: var(--text-muted);
+	opacity: 0.92;
+	touch-action: manipulation;
+}
+
+.handwriting-pen-pill.is-showing {
+	display: flex;
+}
+
+/* ---- chrome ---- */
+
+.handwriting-toolbar {
+	position: absolute;
+	top: 8px;
+	left: 8px;
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	flex-wrap: wrap;
+	max-width: calc(100% - 16px);
+	z-index: 10;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 4px 8px;
+	opacity: 0.9;
+}
+
+.handwriting-toolbar button {
+	font-size: 12px;
+	padding: 2px 8px;
+}
+
+.handwriting-toolbar button.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.handwriting-zoom-label {
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	color: var(--text-muted);
+	min-width: 42px;
+}
+
+/* Pen lab diagnostics overlay */
+.handwriting-overlay {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	z-index: 10;
+	white-space: pre;
+	font-family: var(--font-monospace);
+	font-size: 12px;
+	line-height: 1.55;
+	color: var(--text-muted);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 8px 12px;
+	opacity: 0.92;
+	pointer-events: none;
+	font-variant-numeric: tabular-nums;
+}
+
+.handwriting-mode-label {
+	font-size: 10px;
+	color: var(--text-faint);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.handwriting-status {
+	position: absolute;
+	bottom: 8px;
+	left: 8px;
+	z-index: 10;
+	white-space: pre;
+	font-family: var(--font-monospace);
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--text-faint);
+	pointer-events: none;
+	opacity: 0.75;
+}
+
+.handwriting-status.is-debug {
+	color: var(--text-muted);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 6px 10px;
+	max-width: 70%;
+	overflow: hidden;
+}
+
+/* ---- pen diagnostics ---- */
+
+.handwriting-diag {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	height: 100%;
+	overflow: hidden;
+}
+
+.handwriting-diag-help {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.handwriting-diag-controls {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+.handwriting-diag-capture {
+	flex: 0 0 220px;
+	border: 2px dashed var(--background-modifier-border);
+	border-radius: 8px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-faint);
+	touch-action: none;
+	user-select: none;
+	-webkit-user-select: none;
+	cursor: crosshair;
+}
+
+.handwriting-diag-stats {
+	white-space: pre;
+	font-family: var(--font-monospace);
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 6px 10px;
+}
+
+.handwriting-diag-log {
+	flex: 1 1 auto;
+	overflow-y: auto;
+	font-family: var(--font-monospace);
+	font-size: 11px;
+	line-height: 1.45;
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 6px 10px;
+}
+
+/*
+ * Mobile readability. 11px monospace is a desktop density and iOS renders
+ * it lighter again; the tester on an iPad couldn't read the log. Bigger,
+ * and antialiased rather than subpixel-smoothed, which is what stops
+ * WebKit thinning the glyph strokes.
+ */
+.is-mobile .handwriting-mobile-tool {
+	width: 40px;
+	height: 40px;
+}
+
+.is-mobile .handwriting-diag-stats,
+.is-mobile .handwriting-diag-log {
+	font-size: 13px;
+	line-height: 1.55;
+	-webkit-font-smoothing: antialiased;
+}
+
+.is-mobile .handwriting-diag-help {
+	font-size: 14px;
+	color: var(--text-normal);
+}
+
+.handwriting-diag-row {
+	white-space: pre;
+}
+
+.handwriting-diag-mark {
+	color: var(--text-accent);
+	font-weight: var(--font-bold);
+}
+
+.handwriting-diag-note {
+	color: var(--text-error);
+}
+
+.handwriting-diagnostic-text {
+	display: block;
+	width: 100%;
+	min-height: min(60vh, 32rem);
+	resize: vertical;
+	font-family: var(--font-monospace);
+	color: var(--text-normal);
+}
+
+/*
+ * 16px is the floor that keeps iOS from zooming the whole page in when the
+ * textarea takes focus, and the report is meant to be read here as well as
+ * copied out.
+ */
+.is-mobile .handwriting-diagnostic-text {
+	font-size: 16px;
+	line-height: 1.5;
+	-webkit-font-smoothing: antialiased;
+}
+
+.handwriting-diagnostic-text-controls {
+	display: flex;
+	justify-content: flex-end;
+	margin-top: var(--size-4-3);
+}
+
+/* ---- v0.13.0 polish: Handwriting stays out of the way ------------------------- */
+
+/*
+ * Horizontal bearings on Handwriting pages. Root cause of the "invisible"
+ * horizontal scrollbar: themes like Catppuccin paint scrollbar thumbs at
+ * 5 to 10% alpha. Fine for a vertical bar you already know the location of,
+ * invisible for a horizontal bar you are searching for on a wide ink
+ * surface. Native WebKit scrollbar, theme variables, scoped ONLY to
+ * scrollers Handwriting has actually made horizontally scrollable
+ * (`handwriting-hscroll` is set alongside the extent spacer). Vertical scrolling
+ * and every other pane keep the theme's own styling.
+ */
+/* The horizontal axis patch. Obsidian ships `overflow-x: hidden` on the
+   scroller; the ScrollAxisGuard adds this class while inline ink needs
+   horizontal scroll room and removes it on unmount. The Handwriting-page
+   ancestor supplies the specificity needed against theme rules. */
+.markdown-source-view.handwriting-page .cm-scroller.handwriting-hscroll-axis {
+	overflow-x: auto;
+}
+
+.cm-scroller.handwriting-hscroll::-webkit-scrollbar:horizontal {
+	height: 10px;
+}
+.cm-scroller.handwriting-hscroll::-webkit-scrollbar-track:horizontal {
+	background-color: var(--scrollbar-bg);
+}
+.cm-scroller.handwriting-hscroll::-webkit-scrollbar-thumb:horizontal {
+	background-color: var(--text-faint);
+	border-radius: 5px;
+	background-clip: padding-box;
+	border: 2px solid transparent;
+}
+.cm-scroller.handwriting-hscroll::-webkit-scrollbar-thumb:horizontal:hover,
+.cm-scroller.handwriting-hscroll::-webkit-scrollbar-thumb:horizontal:active {
+	background-color: var(--text-muted);
+}
+
+/*
+ * On Handwriting pages the spatial note should flow into Obsidian's own
+ * backlinks area, not end at a boxed-off rule. Obsidian draws a top border
+ * on the embedded backlinks section ("Linked mentions"); remove exactly
+ * that line, only on Handwriting pages. The backlinks pane itself is untouched.
+ */
+.workspace-leaf-content .markdown-source-view.handwriting-page .embedded-backlinks {
+	border-top: none;
+}
+
+/* ---- inline gesture guard, subtree half ---- */
+
+/*
+ * The pen router holds `touch-action: none` on `.cm-scroller` (inline
+ * style) so a pen contact, hovered or stone cold, is never arbitrated as
+ * a pan. Chromium re-enables panning inside every nested SCROLL CONTAINER,
+ * though: Blink ORs pan-x/pan-y back into the inherited touch-action for
+ * any element whose own overflow is auto/scroll, whether or not it has
+ * anything to scroll. Obsidian's editor is full of those: the embedded
+ * backlinks pane (overflow-y: auto), table widgets, math blocks, callout
+ * content, embeds. Inside them a pen drag became a scroll gesture and the
+ * stroke died with pointercancel (the dead band over "Linked mentions").
+ *
+ * The router toggles this class in lock-step with the inline style
+ * (GuardStyle.ts). The universal selector is the point: no selector can
+ * enumerate scroll containers by computed style, and the rule is inert for
+ * every element that already inherited none from the scroller; only the
+ * nested scrollers' effective value changes. `!important` so no theme rule
+ * on a descendant can re-open a hole. Unit-tested in GuardStyle.test.ts.
+ */
+/*
+ * Both surfaces. The rule was written for the editor and scoped to its
+ * scroller, so on a pdf only half the guard was ever active: the inline style
+ * landed on .pdf-viewer-container and the nested scrollers inside the viewer
+ * kept their own touch-action. A pen landing while a hand rests can then be
+ * arbitrated as a two-pointer gesture, which is a pinch, which is a zoom
+ * (hardware, 2026-08-29: "it did a weird zoom when i put pen to surface").
+ */
+.cm-scroller.handwriting-touch-guard * {
+	touch-action: none !important;
+}
+
+.pdf-viewer-container.handwriting-touch-guard * {
+	touch-action: none !important;
+}
+
+/*
+ * `handwriting-page-id` is implementation bookkeeping. It stays in the Markdown
+ * (source of truth), but it has no business in the Properties UI. Hiding
+ * it is also what makes the first stroke jump-free: when the claim
+ * writes frontmatter, the hidden row adds zero height, and a Properties
+ * block whose ONLY property is handwriting-page-id is hidden as one unit.
+ * User properties are untouched: any other key keeps the block visible.
+ */
+/*
+ * `!important` because Obsidian 1.13.7 sets display on these with higher
+ * specificity (verified live: the class applied and computed display still
+ * block), and themes stack more rules on top. Hiding the id is an
+ * invariant, so it must win every cascade, same as touch-action above.
+ */
+.metadata-property[data-property-key="handwriting-page-id"] {
+	display: none !important;
+}
+.metadata-container.handwriting-metadata-id-only {
+	display: none !important;
+}
+
+/*
+ * Obsidian's status bar (word count, backlink/property counts, plugin
+ * items like Custom sort) is a fixed overlay in the bottom-right corner.
+ * Harmless over prose, but on a Handwriting page it physically covers the lower
+ * edge of the writing surface and the horizontal scrollbar. No native
+ * setting moves it, so it is hidden exactly while the ACTIVE note is a
+ * Handwriting page (body class managed by the plugin); every other note and
+ * every other workspace state keeps it.
+ */
+body.handwriting-active-page .status-bar {
+	display: none;
+}
